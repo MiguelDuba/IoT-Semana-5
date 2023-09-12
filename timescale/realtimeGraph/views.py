@@ -563,6 +563,113 @@ def get_map_json(request, **kwargs):
 
     return JsonResponse(data_result)
 
+def get_map_json_location(request, **kwargs):
+    data_result = {}
+
+    # Get Measure
+    measureParam = kwargs.get('measure', None)
+    selectedMeasure = None
+    measurements = Measurement.objects.all()
+
+    #Get Country
+    countryParam = kwargs.get('country', None)
+    selectedCountry = None
+    countries = Country.objects.all()
+
+    #Get State
+    stateParam = kwargs.get('state', None)
+    selectedState = None
+    states = State.objects.all()
+
+    #Get City
+    cityParam = kwargs.get('city', None)
+    selectedCity = None
+    cities = City.objects.all()
+
+    #Filter Measure
+    if measureParam != None:
+        selectedMeasure = Measurement.objects.filter(name=measureParam)[0]
+    elif measurements.count() > 0:
+        selectedMeasure = measurements[0]
+
+
+    #Filter Country
+    if countryParam != None:
+        selectedCountry = Country.objects.filter(name=countryParam)[0]
+    elif countries.count() > 0:
+        selectedCountry = countries[0]
+
+
+    #Filter State
+    if stateParam != None:
+        selectedState = State.objects.filter(name=stateParam)[0]
+    elif states.count() > 0:
+        selectedState = states[0]
+
+    #Filter City
+    if cityParam != None:
+        selectedCity = City.objects.filter(name=cityParam)[0]
+    elif cities.count() > 0:
+        selectedCity = cities[0]
+
+    locations = Location.objects.filter(country__name=selectedCountry.name, state__name=selectedState.name, city__name=selectedCity.name)
+    try:
+        start = datetime.fromtimestamp(
+            float(request.GET.get("from", None)) / 1000
+        )
+    except:
+        start = None
+    try:
+        end = datetime.fromtimestamp(
+            float(request.GET.get("to", None)) / 1000)
+    except:
+        end = None
+    if start == None and end == None:
+        start = datetime.now()
+        start = start - dateutil.relativedelta.relativedelta(weeks=1)
+        end = datetime.now()
+        end += dateutil.relativedelta.relativedelta(days=1)
+    elif end == None:
+        end = datetime.now()
+    elif start == None:
+        start = datetime.fromtimestamp(0)
+
+    start_ts = int(start.timestamp() * 1000000)
+    end_ts = int(end.timestamp() * 1000000)
+
+    data = []
+
+    for location in locations:
+        stations = Station.objects.filter(location=location)
+        locationData = Data.objects.filter(
+            station__in=stations, measurement__name=selectedMeasure.name, time__gte=start_ts, time__lte=end_ts,
+        )
+        if locationData.count() <= 0:
+            continue
+        minVal = locationData.aggregate(Min("min_value"))["min_value__min"]
+        maxVal = locationData.aggregate(Max("max_value"))["max_value__max"]
+        avgVal = locationData.aggregate(Avg("avg_value"))["avg_value__avg"]
+        data.append(
+            {
+                "name": f"{location.city.name}, {location.state.name}, {location.country.name}",
+                "lat": location.lat,
+                "lng": location.lng,
+                "population": stations.count(),
+                "min": minVal if minVal != None else 0,
+                "max": maxVal if maxVal != None else 0,
+                "avg": round(avgVal if avgVal != None else 0, 2),
+            }
+        )
+
+    startFormatted = start.strftime("%d/%m/%Y") if start != None else " "
+    endFormatted = end.strftime("%d/%m/%Y") if end != None else " "
+
+    data_result["locations"] = [loc.str() for loc in locations]
+    data_result["start"] = startFormatted
+    data_result["end"] = endFormatted
+    data_result["data"] = data
+
+    return JsonResponse(data_result)
 
 class RemaView(TemplateView):
     template_name = "rema.html"
@@ -631,6 +738,131 @@ class RemaView(TemplateView):
         if start == None and end == None:
             start = datetime.now()
             start = start - dateutil.relativedelta.relativedelta(weeks=1)
+            end = datetime.now()
+            end += dateutil.relativedelta.relativedelta(days=1)
+        elif end == None:
+            end = datetime.now()
+        elif start == None:
+            start = datetime.fromtimestamp(0)
+
+        data = []
+
+        start_ts = int(start.timestamp() * 1000000)
+        end_ts = int(end.timestamp() * 1000000)
+
+        for location in locations:
+            stations = Station.objects.filter(location=location)
+            locationData = Data.objects.filter(
+                station__in=stations, measurement__name=selectedMeasure.name, time__gte=start_ts, time__lte=end_ts,
+            )
+            if locationData.count() <= 0:
+                continue
+            minVal = locationData.aggregate(Min("min_value"))["min_value__min"]
+            maxVal = locationData.aggregate(Max("max_value"))["max_value__max"]
+            avgVal = locationData.aggregate(Avg("avg_value"))["avg_value__avg"]
+            data.append(
+                {
+                    "name": f"{location.city.name}, {location.state.name}, {location.country.name}",
+                    "lat": location.lat,
+                    "lng": location.lng,
+                    "population": stations.count(),
+                    "min": minVal if minVal != None else 0,
+                    "max": maxVal if maxVal != None else 0,
+                    "avg": round(avgVal if avgVal != None else 0, 2),
+                }
+            )
+
+        startFormatted = start.strftime("%d/%m/%Y") if start != None else " "
+        endFormatted = end.strftime("%d/%m/%Y") if end != None else " "
+
+        context["measurements"] = measurements
+        context["selectedMeasure"] = selectedMeasure
+        context["locations"] = locations
+        context["start"] = startFormatted
+        context["end"] = endFormatted
+        context["data"] = data
+
+        return context
+    
+class RemaLocationView(TemplateView):
+    template_name = 'rema.html'
+
+    '''
+    Get de /rema. Si el usuario no está logueado se redirige a la página de login.
+    Envía la página de template de historical.
+    El archivo se descarga directamente del csv actualizado. No hay procesamiento ni filtros.
+    '''
+
+    def get(self, request, **kwargs):
+        # if request.user == None or not request.user.is_authenticated:
+        #     return HttpResponseRedirect("/login/")
+        return render(request, self.template_name, self.get_context_data(**kwargs))
+    
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+
+        # Get Measure
+        measureParam = self.kwargs.get('measure', None)
+        selectedMeasure = None
+        measurements = Measurement.objects.all()
+
+        #Get Country
+        countryParam = self.kwargs.get('country', None)
+        selectedCountry = None
+        countries = Country.objects.all()
+
+        #Get State
+        stateParam = self.kwargs.get('state', None)
+        selectedState = None
+        states = State.objects.all()
+
+        #Get City
+        cityParam = self.kwargs.get('city', None)
+        selectedCity = None
+        cities = City.objects.all()
+
+        #Filter Measure
+        if measureParam != None:
+            selectedMeasure = Measurement.objects.filter(name=measureParam)[0]
+        elif measurements.count() > 0:
+            selectedMeasure = measurements[0]
+
+
+        #Filter Country
+        if countryParam != None:
+            selectedCountry = Country.objects.filter(name=countryParam)[0]
+        elif countries.count() > 0:
+            selectedCountry = countries[0]
+
+
+        #Filter State
+        if stateParam != None:
+            selectedState = State.objects.filter(name=stateParam)[0]
+        elif states.count() > 0:
+            selectedState = states[0]
+
+        #Filter City
+        if cityParam != None:
+            selectedCity = City.objects.filter(name=cityParam)[0]
+        elif cities.count() > 0:
+            selectedCity = cities[0]
+
+        locations = Location.objects.filter(country__name=selectedCountry.name, state__name=selectedState.name, city__name=selectedCity.name)
+        try:
+            start = datetime.fromtimestamp(
+                float(self.request.GET.get('from', None))/1000)
+        except:
+            start = None
+        try:
+            end = datetime.fromtimestamp(
+                float(self.request.GET.get('to', None))/1000)
+        except:
+            end = None
+        if start == None and end == None:
+            start = datetime.now()
+            start = start - \
+                dateutil.relativedelta.relativedelta(
+                    weeks=1)
             end = datetime.now()
             end += dateutil.relativedelta.relativedelta(days=1)
         elif end == None:
